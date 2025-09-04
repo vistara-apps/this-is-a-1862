@@ -8,7 +8,7 @@ import OpenAI from 'openai'
 const OutreachGenerator = () => {
   const { investorId } = useParams()
   const navigate = useNavigate()
-  const { getInvestorById, company, saveOutreachMessage } = useData()
+  const { getInvestorById, company, saveOutreachMessage, trackUsage } = useData()
   const { user } = useAuth()
   
   const [selectedInvestor, setSelectedInvestor] = useState(null)
@@ -32,39 +32,25 @@ const OutreachGenerator = () => {
     setError('')
 
     try {
-      // Demo mode - simulate AI generation with a realistic template
-      await new Promise(resolve => setTimeout(resolve, 2000))
+      // Import OpenAI service dynamically to avoid issues if not configured
+      const { generateOutreachMessage } = await import('../services/openai')
       
-      const demoMessage = `Hi ${selectedInvestor.name},
-
-I hope this email finds you well. My name is [Your Name], and I'm the founder of ${company.name}.
-
-I've been following ${selectedInvestor.firm}'s work in ${company.industry}, particularly your focus on ${selectedInvestor.investment_thesis.split(',')[0]}. Your recent investments align perfectly with what we're building.
-
-${company.name} is ${company.description}
-
-What makes us particularly interesting:
-• We're operating in the ${company.industry} space at the ${company.stage} stage
-• Our approach to solving this problem is unique because [specific differentiator]
-• We've achieved [key metric/milestone] in just [timeframe]
-
-${customNotes ? `\nAdditional context: ${customNotes}` : ''}
-
-Given ${selectedInvestor.firm}'s track record with ${selectedInvestor.stage_focus} companies and focus on companies like ours, I believe there could be a strong strategic fit.
-
-I'd love to share more about our vision and discuss how we align with your investment thesis. Would you be available for a brief 15-minute call next week?
-
-Best regards,
-[Your Name]
-Founder, ${company.name}
-[your-email@company.com]
-
-P.S. I've attached our latest pitch deck and would be happy to provide additional materials upon request.`
-
-      setGeneratedMessage(demoMessage)
-      setSubject(`Partnership opportunity: ${company.name} x ${selectedInvestor.firm}`)
+      const result = await generateOutreachMessage({
+        investor: selectedInvestor,
+        company,
+        customNotes,
+        messageType: 'initial'
+      })
+      
+      setGeneratedMessage(result.message)
+      setSubject(result.subject)
+      
+      // Track usage
+      if (trackUsage) {
+        await trackUsage('ai_generation')
+      }
     } catch (err) {
-      setError('Failed to generate outreach message. Please try again.')
+      setError(err.message || 'Failed to generate outreach message. Please try again.')
       console.error('Error generating message:', err)
     } finally {
       setIsGenerating(false)
@@ -76,18 +62,22 @@ P.S. I've attached our latest pitch deck and would be happy to provide additiona
     navigator.clipboard.writeText(fullMessage)
   }
 
-  const saveMessage = () => {
+  const saveMessage = async () => {
     if (!generatedMessage || !selectedInvestor) return
 
-    const messageData = {
-      userId: user.userId,
-      investorId: selectedInvestor.investorId,
-      subject,
-      body: generatedMessage
-    }
+    try {
+      const messageData = {
+        investor_id: selectedInvestor.investor_id,
+        subject,
+        body: generatedMessage
+      }
 
-    saveOutreachMessage(messageData)
-    navigate('/')
+      await saveOutreachMessage(messageData)
+      await trackUsage('outreach')
+      navigate('/')
+    } catch (error) {
+      console.error('Error saving message:', error)
+    }
   }
 
   if (!company) {

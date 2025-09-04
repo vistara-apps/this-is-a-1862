@@ -1,4 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react'
+import { dbService } from '../services/supabase'
+import { useAuth } from './AuthContext'
+import toast from 'react-hot-toast'
 
 const DataContext = createContext({})
 
@@ -152,66 +155,178 @@ Best regards,
 ]
 
 export const DataProvider = ({ children }) => {
-  const [investors, setInvestors] = useState(mockInvestors)
-  const [templates, setTemplates] = useState(mockTemplates)
+  const { user } = useAuth()
+  const [investors, setInvestors] = useState([])
+  const [templates, setTemplates] = useState([])
   const [outreachMessages, setOutreachMessages] = useState([])
-  const [company, setCompany] = useState(() => {
-    const stored = localStorage.getItem('investormatch_company')
-    return stored ? JSON.parse(stored) : null
-  })
+  const [company, setCompany] = useState(null)
+  const [loading, setLoading] = useState(false)
 
-  const saveCompany = (companyData) => {
-    const companyInfo = {
-      companyId: 'comp_' + Math.random().toString(36).substr(2, 9),
-      ...companyData,
-      createdAt: new Date().toISOString()
+  // Load initial data when user is authenticated
+  useEffect(() => {
+    if (user?.userId) {
+      loadUserData()
+    } else {
+      // Clear data when user logs out
+      setCompany(null)
+      setOutreachMessages([])
     }
-    localStorage.setItem('investormatch_company', JSON.stringify(companyInfo))
-    setCompany(companyInfo)
-    return companyInfo
+  }, [user])
+
+  // Load investors and templates on mount
+  useEffect(() => {
+    loadPublicData()
+  }, [])
+
+  const loadPublicData = async () => {
+    try {
+      setLoading(true)
+      
+      // Load investors and templates in parallel
+      const [investorsData, templatesData] = await Promise.all([
+        dbService.investors.getAll(),
+        dbService.responseTemplates.getAll()
+      ])
+      
+      setInvestors(investorsData || [])
+      setTemplates(templatesData || [])
+    } catch (error) {
+      console.error('Error loading public data:', error)
+      // Fallback to mock data if database fails
+      setInvestors(mockInvestors)
+      setTemplates(mockTemplates)
+    } finally {
+      setLoading(false)
+    }
   }
 
-  const searchInvestors = (filters) => {
-    let filtered = investors
-
-    if (filters.industry && filters.industry !== 'all') {
-      filtered = filtered.filter(investor => 
-        investor.criteria.some(criterion => 
-          criterion.industry.toLowerCase().includes(filters.industry.toLowerCase())
-        ) || investor.investment_thesis.toLowerCase().includes(filters.industry.toLowerCase())
-      )
+  const loadUserData = async () => {
+    try {
+      setLoading(true)
+      
+      // Load user-specific data
+      const [companyData, messagesData] = await Promise.all([
+        dbService.companies.getByUserId(user.userId),
+        dbService.outreachMessages.getByUserId(user.userId)
+      ])
+      
+      setCompany(companyData)
+      setOutreachMessages(messagesData || [])
+    } catch (error) {
+      console.error('Error loading user data:', error)
+      toast.error('Failed to load your data')
+    } finally {
+      setLoading(false)
     }
-
-    if (filters.stage && filters.stage !== 'all') {
-      filtered = filtered.filter(investor => 
-        investor.stage_focus.toLowerCase() === filters.stage.toLowerCase()
-      )
-    }
-
-    if (filters.location && filters.location !== 'all') {
-      filtered = filtered.filter(investor =>
-        investor.criteria.some(criterion =>
-          criterion.location.toLowerCase().includes(filters.location.toLowerCase())
-        )
-      )
-    }
-
-    return filtered
   }
 
-  const saveOutreachMessage = (messageData) => {
-    const message = {
-      messageId: 'msg_' + Math.random().toString(36).substr(2, 9),
-      ...messageData,
-      sentAt: new Date().toISOString(),
-      status: 'draft'
+  const saveCompany = async (companyData) => {
+    try {
+      if (!user?.userId) throw new Error('User not authenticated')
+      
+      let savedCompany
+      if (company?.company_id) {
+        // Update existing company
+        savedCompany = await dbService.companies.update(company.company_id, companyData)
+      } else {
+        // Create new company
+        savedCompany = await dbService.companies.create({
+          ...companyData,
+          user_id: user.userId
+        })
+      }
+      
+      setCompany(savedCompany)
+      toast.success('Company information saved successfully')
+      return savedCompany
+    } catch (error) {
+      console.error('Error saving company:', error)
+      toast.error('Failed to save company information')
+      throw error
     }
-    setOutreachMessages(prev => [message, ...prev])
-    return message
+  }
+
+  const searchInvestors = async (filters = {}) => {
+    try {
+      const results = await dbService.investors.getAll(filters)
+      return results || []
+    } catch (error) {
+      console.error('Error searching investors:', error)
+      toast.error('Failed to search investors')
+      return investors // Return cached data as fallback
+    }
+  }
+
+  const saveOutreachMessage = async (messageData) => {
+    try {
+      if (!user?.userId) throw new Error('User not authenticated')
+      
+      const message = await dbService.outreachMessages.create({
+        ...messageData,
+        user_id: user.userId
+      })
+      
+      setOutreachMessages(prev => [message, ...prev])
+      toast.success('Outreach message saved')
+      return message
+    } catch (error) {
+      console.error('Error saving outreach message:', error)
+      toast.error('Failed to save outreach message')
+      throw error
+    }
+  }
+
+  const updateOutreachMessage = async (messageId, updates) => {
+    try {
+      const updatedMessage = await dbService.outreachMessages.update(messageId, updates)
+      
+      setOutreachMessages(prev => 
+        prev.map(msg => msg.message_id === messageId ? updatedMessage : msg)
+      )
+      
+      return updatedMessage
+    } catch (error) {
+      console.error('Error updating outreach message:', error)
+      toast.error('Failed to update message')
+      throw error
+    }
   }
 
   const getInvestorById = (investorId) => {
-    return investors.find(inv => inv.investorId === investorId)
+    return investors.find(inv => inv.investor_id === investorId)
+  }
+
+  const createTemplate = async (templateData) => {
+    try {
+      const template = await dbService.responseTemplates.create({
+        ...templateData,
+        created_by: user?.userId,
+        is_public: false
+      })
+      
+      setTemplates(prev => [template, ...prev])
+      toast.success('Template created successfully')
+      return template
+    } catch (error) {
+      console.error('Error creating template:', error)
+      toast.error('Failed to create template')
+      throw error
+    }
+  }
+
+  // Usage tracking functions
+  const trackUsage = async (actionType) => {
+    try {
+      if (!user?.userId) return
+      
+      const monthYear = new Date().toISOString().slice(0, 7) // YYYY-MM format
+      
+      // This would typically be handled by a backend function
+      // For now, we'll just track it locally
+      console.log(`Tracking usage: ${actionType} for ${monthYear}`)
+    } catch (error) {
+      console.error('Error tracking usage:', error)
+    }
   }
 
   const value = {
@@ -219,10 +334,15 @@ export const DataProvider = ({ children }) => {
     templates,
     outreachMessages,
     company,
+    loading,
     saveCompany,
     searchInvestors,
     saveOutreachMessage,
-    getInvestorById
+    updateOutreachMessage,
+    getInvestorById,
+    createTemplate,
+    trackUsage,
+    refreshData: loadUserData
   }
 
   return (
